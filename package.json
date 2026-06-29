@@ -1,0 +1,15 @@
+{
+  "name": "pharma-ai",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,amber \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "python -m src.presentation.api.app",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "install:frontend": "npm install --prefix frontend",
+    "build:frontend": "npm run build --prefix frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}
