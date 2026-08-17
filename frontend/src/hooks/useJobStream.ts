@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { getToken } from "@/api/client";
+import { apiUrl, getToken } from "@/api/client";
 import { jobsApi } from "@/api/endpoints";
 import type { JobResult, JobStatusDict } from "@/api/types";
 
@@ -14,9 +14,10 @@ interface JobStreamState {
  * Acompanha um job assíncrono via SSE (`/jobs/{id}/events`) e busca o resultado
  * final em `/jobs/{id}/result` quando o job completa.
  *
- * EventSource não suporta header Authorization, então o token vai como query
- * param — o backend aceita Bearer no header; aqui usamos fetch+ReadableStream
- * para poder enviar o header normalmente.
+ * Usa fetch + ReadableStream em vez de EventSource justamente porque o endpoint
+ * é autenticado: EventSource não permite enviar header Authorization. Isso
+ * também é o que faz o stream funcionar cross-origin (front em domínio próprio),
+ * bastando que o CORS da API aceite o header.
  */
 export function useJobStream<T>() {
   const [state, setState] = useState<JobStreamState>({ status: "idle", progress: 0, progressMsg: "", error: null });
@@ -30,7 +31,7 @@ export function useJobStream<T>() {
 
     (async () => {
       try {
-        const res = await fetch(`/jobs/${jobId}/events`, {
+        const res = await fetch(apiUrl(`/jobs/${jobId}/events`), {
           headers: { Authorization: `Bearer ${getToken() ?? ""}` },
           signal: controller.signal,
         });

@@ -1,0 +1,27 @@
+# Serviço: MCP server (ferramentas farmacêuticas).
+# Antes era subprocesso stdio dentro de cada processo do agente; agora é serviço
+# HTTP consumido por api e worker via MCP_URL.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    MCP_TRANSPORT=streamable-http \
+    MCP_HOST=0.0.0.0 \
+    MCP_PORT=8080
+
+WORKDIR /app
+
+# Só precisa do SDK do MCP: este serviço não fala com Anthropic, Redis ou RabbitMQ.
+RUN pip install --no-cache-dir "mcp==1.28.0"
+
+COPY src/__init__.py ./src/
+COPY src/infrastructure/__init__.py ./src/infrastructure/
+COPY src/infrastructure/ai/__init__.py ./src/infrastructure/ai/
+COPY src/infrastructure/ai/mcp/ ./src/infrastructure/ai/mcp/
+
+RUN useradd -m pharma && chown -R pharma:pharma /app
+USER pharma
+
+EXPOSE 8080
+
+CMD ["python", "-m", "src.infrastructure.ai.mcp.pharma_tools"]

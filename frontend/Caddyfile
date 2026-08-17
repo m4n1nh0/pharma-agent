@@ -1,0 +1,20 @@
+# Servidor estático da SPA. Sem proxy: o frontend chama a API direto pela
+# origem em VITE_API_URL (embutida no build), com CORS liberado no FastAPI.
+# {$PORT:80} — o Railway injeta a porta em runtime.
+:{$PORT:80} {
+	root * /srv
+	encode gzip
+
+	# Assets com hash podem ser cacheados agressivamente; o HTML nunca, senão um
+	# deploy novo continua servindo o bundle antigo.
+	# O matcher precisa ser por negação: "/" e "/login" também servem index.html,
+	# então casar o caminho literal /index.html não pegaria esses casos.
+	@assets path /assets/*
+	@html not path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	header @html Cache-Control "no-cache"
+
+	# Rotas client-side (/login, /drug, …) não existem em disco: caem no index.html.
+	try_files {path} /index.html
+	file_server
+}

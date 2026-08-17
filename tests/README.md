@@ -45,6 +45,7 @@ Testam implementações concretas de infraestrutura com dependências reais (asy
 | Arquivo | O que testa |
 |---|---|
 | `test_job_repository.py` | `InMemoryJobRepository`: criação, transições de status, SSE via `asyncio.Queue` |
+| `test_redis_job_repository.py` | `RedisJobRepository`: round-trip Job ↔ JSON e nomes de chave (sem Redis rodando) |
 
 Requerem `@pytest.mark.asyncio`. Configure em `pyproject.toml`:
 

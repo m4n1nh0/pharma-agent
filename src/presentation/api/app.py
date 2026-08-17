@@ -99,7 +99,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# Com o frontend em domínio próprio, CORS_ORIGINS restringe quem pode chamar a API.
+# allow_headers inclui Authorization: o SSE de /jobs/{id}/events é consumido via
+# fetch com Bearer token (ver frontend/src/hooks/useJobStream.ts), não EventSource.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.add_middleware(TimingMiddleware)
 
 app.include_router(auth_router.router)

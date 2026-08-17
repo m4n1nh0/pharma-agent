@@ -30,9 +30,13 @@ pharma_v2/
 │   ├── integration/     → repositórios e broker com asyncio real
 │   └── e2e/             → fluxos HTTP completos
 ├── .env.example
-├── docker-compose.yml
-├── Dockerfile           → multi-stage: build do frontend + runtime Python
-├── railway.json         → builder, healthcheck e restart policy do Railway
+├── docker-compose.yml   → stack completa: frontend, api, worker, mcp, redis, rabbitmq
+├── Dockerfile           → monolito (frontend + api num processo só)
+├── Dockerfile.api       → serviço da API
+├── Dockerfile.worker    → serviço do worker
+├── Dockerfile.mcp       → serviço do MCP
+├── Dockerfile.frontend  → SPA servida por Caddy
+├── railway.*.json       → config as code, uma por serviço
 └── pyproject.toml
 ```
 
@@ -41,7 +45,8 @@ Cada camada tem seu próprio `README.md` com responsabilidades, arquivos e exemp
 ## Pré-requisitos
 
 - Python 3.12+
-- RabbitMQ 3.13+ (ou via Docker)
+- Docker (a stack completa sobe via `docker compose`)
+- RabbitMQ 3.13+ e Redis 7+ — só se for rodar fora do compose
 - `ANTHROPIC_API_KEY`
 
 ## Instalação rápida
@@ -71,70 +76,101 @@ npm run dev                  # backend (uvicorn --reload) + frontend (vite) junt
 
 Acesse http://localhost:5173. Em produção, não é necessário rodar o Vite — o backend serve o build estático (`npm run build:frontend`) em `frontend/dist`.
 
-**Produção** (worker como processo separado, escalável):
+**Stack completa em serviços separados** (espelha o deploy):
 
 ```bash
-# Terminal 1
-EMBEDDED_WORKER=false uvicorn src.presentation.api.app:app --workers 4
-
-# Terminal 2 (pode rodar N instâncias)
-python -m src.presentation.worker.consumer
+cp .env.example .env             # preencha ANTHROPIC_API_KEY e SECRET_KEY
+docker compose up --build
+docker compose up -d --scale worker=3   # escalar só o worker
 ```
 
-**Docker Compose** (tudo junto):
+| Serviço | URL | Papel |
+|---|---|---|
+| frontend | http://localhost:3000 | SPA estática (Caddy) |
+| api | http://localhost:8000 | REST + SSE · [/docs](http://localhost:8000/docs) |
+| mcp | http://localhost:8080/mcp | ferramentas farmacêuticas (FastMCP) |
+| rabbitmq | http://localhost:15672 | management UI (guest/guest) |
+| redis | localhost:6379 | job store + pub/sub |
+| worker | — | consome as filas, sem porta |
 
-```bash
-docker-compose up --build
-docker-compose up --scale worker=4   # escalar workers
+## Arquitetura em serviços
+
+```
+                    ┌──────────────┐
+   browser ────────▶│   frontend   │  Caddy: estáticos + fallback de SPA
+                    │  Dockerfile. │  VITE_API_URL embutida no build
+                    │   frontend   │
+                    └──────┬───────┘
+                           │ HTTP (CORS)
+                    ┌──────▼───────┐        ┌──────────────┐
+                    │     api      │───────▶│     mcp      │  FastMCP
+                    │  Dockerfile. │        │  Dockerfile. │  streamable-http
+                    │     api      │        │     mcp      │
+                    └───┬──────┬───┘        └──────▲───────┘
+                publica │      │ lê estado         │
+                    ┌───▼────┐ │  ┌──────────┐     │
+                    │rabbitmq│ └─▶│  redis   │     │
+                    └───┬────┘    └────▲─────┘     │
+                consome │              │ escreve   │
+                    ┌───▼──────────┐   │           │
+                    │    worker    │───┴───────────┘
+                    │  Dockerfile. │
+                    │    worker    │
+                    └──────────────┘
 ```
 
-Serviços sobem em:
+Três decisões sustentam essa separação:
 
-| Serviço | URL |
-|---|---|
-| API + frontend | http://localhost:8000 |
-| Swagger UI | http://localhost:8000/docs |
-| RabbitMQ management | http://localhost:15672 (guest/guest) |
+- **Redis como job store** (`RedisJobRepository`) — a API cria o job, o worker escreve progresso e resultado, e ambos leem o mesmo estado. Com o store em memória cada processo teria o seu, e a API veria `pending` para sempre.
+- **Pub/sub para o SSE** — `GET /jobs/{id}/events` é servido pela API, mas os eventos são publicados pelo worker. Sem pub/sub o evento não cruzaria o limite do processo.
+- **MCP por HTTP** — antes cada processo do agente subia o servidor MCP como subprocesso stdio. Como serviço, API e worker compartilham uma instância só de ferramentas.
 
 ## Deploy no Railway
 
-O `Dockerfile` é multi-stage: compila o frontend (Node) e serve o build estático pelo próprio FastAPI, então **um único serviço** entrega API + SPA. O `railway.json` já aponta o builder para o Dockerfile e o healthcheck para `/health`.
+Seis serviços: quatro construídos deste repo, dois de template.
 
-**1. Criar o projeto**
+**1. Redis e RabbitMQ** — adicione pelos templates do Railway. Cada um expõe uma URL de conexão nas variáveis.
 
-```bash
-railway login
-railway init
-railway up          # ou conecte o repo do GitHub pelo dashboard
-```
+**2. Para cada serviço do repo**, crie um serviço apontando para este repositório e defina o arquivo de config em Settings → Config as code:
 
-**2. Definir as variáveis** (Settings → Variables):
+| Serviço | Config as code | Dockerfile |
+|---|---|---|
+| `api` | `railway.api.json` | `Dockerfile.api` |
+| `worker` | `railway.worker.json` | `Dockerfile.worker` |
+| `mcp` | `railway.mcp.json` | `Dockerfile.mcp` |
+| `frontend` | `railway.frontend.json` | `Dockerfile.frontend` |
 
-| Variável | Valor |
+Sem apontar o config, o Railway tenta detectar o build sozinho e erra o serviço. Se preferir não usar config as code, defina o Dockerfile Path na mão em cada serviço.
+
+**3. Variáveis por serviço:**
+
+| Serviço | Variáveis |
 |---|---|
-| `ANTHROPIC_API_KEY` | sua chave |
-| `SECRET_KEY` | `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
-| `EMBEDDED_WORKER` | `true` |
+| `api` | `ANTHROPIC_API_KEY`, `SECRET_KEY`, `REDIS_URL`, `RABBITMQ_URL`, `MCP_URL`, `EMBEDDED_WORKER=false`, `CORS_ORIGINS=https://<dominio-do-frontend>` |
+| `worker` | `ANTHROPIC_API_KEY`, `REDIS_URL`, `RABBITMQ_URL`, `MCP_URL` |
+| `mcp` | `MCP_TRANSPORT=streamable-http`, `MCP_HOST=::`, `PORT=8080` |
+| `frontend` | `VITE_API_URL=https://<dominio-da-api>` |
 
-Não defina `PORT` — o Railway injeta a porta e o `CMD` já a usa.
+`MCP_URL` aponta para a rede privada: `http://mcp.railway.internal:8080/mcp`.
 
-**3. Gerar o domínio** (Settings → Networking → Generate Domain). A SPA responde em `/`, o Swagger em `/docs`.
+**4. Domínios públicos** só para `frontend` e `api` (Settings → Networking → Generate Domain). `worker`, `mcp`, Redis e RabbitMQ ficam só na rede privada.
 
-### RabbitMQ é opcional
+Dois detalhes que costumam custar tempo:
 
-Sem `RABBITMQ_URL` acessível, o broker degrada para despacho **in-process**: os jobs assíncronos continuam funcionando (o worker embutido processa em background), só não há fila durável — jobs em andamento são perdidos num redeploy. Para ter fila de verdade, adicione o template RabbitMQ ao projeto e aponte `RABBITMQ_URL` para a variável de conexão dele.
+- **A rede privada do Railway é IPv6.** Por isso `MCP_HOST=::` no serviço MCP — escutando só em `0.0.0.0` ele não recebe o tráfego interno de `api` e `worker`.
+- **`VITE_API_URL` é build-time.** O Vite embute o valor no bundle; trocar o domínio da API exige redeploy do `frontend`, não só mudar a variável.
 
-`GET /health` mostra qual modo está ativo:
+### O worker não pode dormir
 
-```json
-{"status": "healthy", "version": "3.0.0", "broker": "in-process"}
-```
+Se você usar app sleeping (scale-to-zero) no projeto, deixe-o **desligado no worker**. Ele não recebe requisição HTTP — fica com uma conexão AMQP aberta consumindo fila. Dormindo, ninguém o acorda e as mensagens ficam paradas. A `api` pode dormir; o `worker`, não. Redis e RabbitMQ são serviços com estado e ficam sempre ativos.
 
-### Limites desta configuração
+### Ainda em memória
 
-- **`--workers 1` e `numReplicas: 1`** são obrigatórios: o job store e os subscribers SSE vivem em memória (`InMemoryJobRepository`), então réplicas não veriam os mesmos jobs. Para escalar horizontalmente, implemente `IJobRepository` sobre Redis/Postgres.
-- **Usuários também são em memória** (`USERS_DB` em `auth_service.py`): contas criadas via `/auth/register` desaparecem no redeploy. As contas demo continuam disponíveis.
-- **`EMBEDDED_WORKER=false` com worker separado** só funciona quando o job store for compartilhado (Redis/Postgres) — hoje o worker marcaria o progresso no próprio processo e a API nunca veria. Vale também para o serviço `worker` do `docker-compose.yml`.
+**Usuários** (`USERS_DB` em `auth_service.py`) continuam em memória, por processo. Contas criadas via `/auth/register` valem só para a réplica que atendeu o request e desaparecem no redeploy; as contas demo existem em todas. Login funciona porque o JWT é validado com `SECRET_KEY` — que precisa ser **a mesma** em `api` e em qualquer réplica.
+
+### Deploy monolítico (alternativa)
+
+O `Dockerfile` da raiz continua funcionando: compila o frontend, serve tudo num processo só com `EMBEDDED_WORKER=true`, sem Redis nem serviço MCP. Serve como rollback rápido — um serviço, uma variável (`ANTHROPIC_API_KEY`) e pronto.
 
 ## Contas demo
 
@@ -151,6 +187,10 @@ Sem `RABBITMQ_URL` acessível, o broker degrada para despacho **in-process**: os
 | `SECRET_KEY` | `pharma-super-secret-...` | Em produção |
 | `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | Não |
 | `EMBEDDED_WORKER` | `true` | Não |
+| `REDIS_URL` | — (vazio = em memória) | Com worker separado |
+| `MCP_URL` | — (vazio = subprocesso stdio) | Com serviço MCP |
+| `CORS_ORIGINS` | `*` | Com frontend em domínio próprio |
+| `VITE_API_URL` | — (vazio = mesma origem) | Com frontend em domínio próprio |
 | `ASYNC_THRESHOLD_INTERACTIONS` | `3` | Não |
 | `ASYNC_THRESHOLD_PRESCRIPTION` | `3` | Não |
 | `PORT` | `8000` | Não (injetada pela plataforma) |

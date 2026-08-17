@@ -1,0 +1,29 @@
+# Serviço: API REST (FastAPI).
+# Não embute o frontend — a SPA tem serviço próprio (Dockerfile.frontend).
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY pyproject.toml .
+
+RUN useradd -m pharma && chown -R pharma:pharma /app
+USER pharma
+
+EXPOSE 8000
+
+# --workers 1: os subscribers SSE são por processo. Com o job store no Redis o
+# estado é compartilhado, mas um stream aberto vive no worker que o aceitou —
+# para escalar, aumente réplicas do serviço, não workers do uvicorn.
+CMD ["sh", "-c", "exec uvicorn src.presentation.api.app:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

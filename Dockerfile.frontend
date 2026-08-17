@@ -1,0 +1,24 @@
+# Serviço: SPA (React + Vite) servida como estático por Caddy.
+#
+# VITE_API_URL entra como build arg porque o Vite embute a variável no bundle —
+# não é lida em runtime. Trocar a URL da API exige rebuild deste serviço.
+FROM node:20-alpine AS build
+
+ARG VITE_API_URL=""
+ENV VITE_API_URL=$VITE_API_URL
+
+WORKDIR /build
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+
+FROM caddy:2-alpine
+
+COPY --from=build /build/dist /srv
+COPY frontend/Caddyfile /etc/caddy/Caddyfile
+
+EXPOSE 80

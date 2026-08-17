@@ -1,6 +1,27 @@
-version: "3.9"
+# Stack completa em serviços separados — espelha a topologia do Railway.
+#
+#   frontend (Caddy)  →  api (FastAPI)  →  mcp (FastMCP HTTP)
+#                            ↓ publica        ↑
+#                        rabbitmq  →  worker ─┘
+#                            ↓            ↓
+#                          redis ←────────┘   (job store + pub/sub do SSE)
+#
+# Subir:  docker compose up --build
+# Escalar workers:  docker compose up -d --scale worker=3
 
 services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: pharma-redis
+    command: redis-server --save "" --appendonly no   # job store efêmero (TTL 24h)
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -19,39 +40,71 @@ services:
       timeout: 5s
       retries: 5
 
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    container_name: pharma-mcp
+    ports:
+      - "8080:8080"    # http://localhost:8080/mcp
+    restart: unless-stopped
+
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.api
     container_name: pharma-api
-    command: uvicorn src.presentation.api.app:app --host 0.0.0.0 --port 8000 --workers 2
     ports:
       - "8000:8000"
     environment:
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
-      EMBEDDED_WORKER: "false"   
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      MCP_URL: http://mcp:8080/mcp
+      EMBEDDED_WORKER: "false"      # o worker é serviço próprio
+      CORS_ORIGINS: http://localhost:3000
     depends_on:
+      redis:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    volumes:
-      - .:/app
+      mcp:
+        condition: service_started
     restart: unless-stopped
 
   worker:
-    build: .
-    container_name: pharma-worker
-    command: python -m src.presentation.worker.consumer
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    # sem container_name: impediria `--scale worker=N`
     environment:
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      MCP_URL: http://mcp:8080/mcp
     depends_on:
+      redis:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    volumes:
-      - .:/app
+      mcp:
+        condition: service_started
     restart: unless-stopped
-    deploy:
-      replicas: 2     
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        # Origem que o browser usa — localhost, não o nome do serviço interno.
+        VITE_API_URL: http://localhost:8000
+    container_name: pharma-frontend
+    ports:
+      - "3000:80"      # http://localhost:3000
+    depends_on:
+      - api
+    restart: unless-stopped
 
 volumes:
   rabbitmq_data:

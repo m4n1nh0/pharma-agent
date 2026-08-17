@@ -1,7 +1,15 @@
-// Cliente HTTP fino. Mesma origem em produção (build servido pelo FastAPI);
-// em dev o Vite faz proxy das rotas listadas em vite.config.ts para o backend.
+// Cliente HTTP fino.
+// VITE_API_URL vazia → mesma origem (dev com proxy do Vite, ou build servido
+// pelo próprio FastAPI). Definida → API em domínio próprio, como no deploy em
+// serviços separados. O valor é embutido no bundle em tempo de build.
 
 const TOKEN_KEY = "pharma_token";
+
+export const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+export function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -30,7 +38,7 @@ export async function apiFetch<T>(
   options: { method?: string; body?: unknown } = {}
 ): Promise<T> {
   const token = getToken();
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     method: options.method ?? (options.body ? "POST" : "GET"),
     headers: {
       "Content-Type": "application/json",

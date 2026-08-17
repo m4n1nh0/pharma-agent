@@ -31,6 +31,20 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = ""
 
+    # MCP — vazio: cada processo sobe o servidor como subprocesso stdio (dev).
+    # Definido: consome o serviço MCP por HTTP (ex. http://mcp:8080/mcp).
+    mcp_url: str = ""
+    mcp_host: str = "0.0.0.0"
+    mcp_port: int = 8080
+
+    # CORS — origens do frontend quando ele roda em domínio próprio.
+    # Lista separada por vírgula; "*" libera todas.
+    cors_origins: str = "*"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
     # Servidor
     host: str = "0.0.0.0"
     port: int = 8000

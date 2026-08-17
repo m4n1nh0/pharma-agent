@@ -68,13 +68,25 @@ class PharmaAnalysisAgent:
             max_tokens=4000,
             api_key=settings.anthropic_api_key,
         )
-        self._mcp_config = {
-            "pharma-server": {
-                "command": "python",
-                "args": ["-m", "src.infrastructure.ai.mcp.pharma_tools"],
-                "transport": "stdio",
+        # MCP_URL definida → serviço MCP próprio, consumido por HTTP (produção,
+        # serviços separados). Vazia → subprocesso stdio no mesmo container (dev).
+        # Atenção à assimetria do nome: o cliente usa "streamable_http" e o
+        # FastMCP do servidor usa "streamable-http".
+        if settings.mcp_url:
+            self._mcp_config = {
+                "pharma-server": {
+                    "transport": "streamable_http",
+                    "url": settings.mcp_url,
+                }
             }
-        }
+        else:
+            self._mcp_config = {
+                "pharma-server": {
+                    "command": "python",
+                    "args": ["-m", "src.infrastructure.ai.mcp.pharma_tools"],
+                    "transport": "stdio",
+                }
+            }
         self._tools: Optional[list] = None
         self._graph = None
 
@@ -83,7 +95,11 @@ class PharmaAnalysisAgent:
         try:
             client = MultiServerMCPClient(self._mcp_config)
             self._tools = await client.get_tools()
-            logger.info("Conectado ao MCP server 'pharma-server' (%d ferramentas)", len(self._tools))
+            logger.info(
+                "Conectado ao MCP server 'pharma-server' via %s (%d ferramentas)",
+                settings.mcp_url or "stdio",
+                len(self._tools),
+            )
         except Exception:
             logger.warning(
                 "MCP server indisponível — usando ferramentas mock de fallback (dev/demo)",

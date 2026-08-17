@@ -1,5 +1,7 @@
 """Servidor MCP com ferramentas farmacêuticas, consumido pelo agente LangGraph."""
 
+import os
+
 from mcp.server.fastmcp import FastMCP
 
 DRUG_DATABASE = {
@@ -91,7 +93,14 @@ ALTERNATIVES_DATABASE = {
     "enalapril": {"alternatives": ["Losartana", "Valsartana", "Ramipril"]},
 }
 
-mcp = FastMCP("pharma-mcp")
+# host/port valem apenas para os transportes HTTP; em stdio são ignorados.
+# Lidos do ambiente e não de settings para o servidor não arrastar a config da
+# aplicação (ele roda sozinho, sem chave da Anthropic nem Redis).
+mcp = FastMCP(
+    "pharma-mcp",
+    host=os.getenv("MCP_HOST", "0.0.0.0"),
+    port=int(os.getenv("PORT") or os.getenv("MCP_PORT") or 8080),
+)
 
 
 @mcp.tool()
@@ -159,4 +168,7 @@ def calculate_creatinine_clearance(age: int, weight_kg: float, creatinine_mg_dl:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    # stdio: subprocesso do agente (dev, um container só).
+    # streamable-http: serviço próprio, consumido por api e worker via MCP_URL.
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    mcp.run(transport=transport)

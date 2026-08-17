@@ -26,6 +26,24 @@ QUEUE_RESULTS      = "pharma.results"
 ALL_QUEUES = [QUEUE_ANALYZE, QUEUE_INTERACTIONS, QUEUE_PRESCRIPTION, QUEUE_RESULTS]
 
 
+def dlx_name(queue: str) -> str:
+    return f"{queue}.dlx"
+
+
+def dlq_name(queue: str) -> str:
+    return f"{queue}.dlq"
+
+
+def queue_args(queue: str) -> dict:
+    """Argumentos de declaração da fila — fonte única.
+
+    O RabbitMQ rejeita redeclarar uma fila com argumentos diferentes
+    (PRECONDITION_FAILED), e API e worker declaram as mesmas filas em processos
+    distintos. Divergir aqui derruba o consumidor.
+    """
+    return {"x-message-ttl": 3_600_000, "x-dead-letter-exchange": dlx_name(queue)}
+
+
 class RabbitMQBroker(IMessageBroker):
     """Implementação de IMessageBroker com RabbitMQ via aio-pika.
 
@@ -59,13 +77,21 @@ class RabbitMQBroker(IMessageBroker):
         )
 
         for q_name in ALL_QUEUES:
+            # DLX + DLQ antes da fila: sem o exchange de dead-letter existindo, o
+            # x-dead-letter-exchange aponta para o nada e a mensagem descartada
+            # desaparece em silêncio em vez de ficar inspecionável.
+            dlx = await self._pub_channel.declare_exchange(
+                dlx_name(q_name), aio_pika.ExchangeType.FANOUT, durable=True
+            )
+            dlq = await self._pub_channel.declare_queue(dlq_name(q_name), durable=True)
+            await dlq.bind(dlx)
+
             q = await self._pub_channel.declare_queue(
-                q_name, durable=True,
-                arguments={"x-message-ttl": 3_600_000, "x-dead-letter-exchange": f"{q_name}.dlx"},
+                q_name, durable=True, arguments=queue_args(q_name)
             )
             await q.bind(self._direct_exchange, routing_key=q_name)
 
-        logger.info("RabbitMQ pronto. Filas: %s", ALL_QUEUES)
+        logger.info("RabbitMQ pronto. Filas: %s (+ .dlq)", ALL_QUEUES)
 
     async def disconnect(self) -> None:
         if self._conn:
@@ -101,7 +127,9 @@ class RabbitMQBroker(IMessageBroker):
         channel = await self._conn.channel()
         await channel.set_qos(prefetch_count=prefetch)
         exchange = await channel.declare_exchange(EXCHANGE_DIRECT, aio_pika.ExchangeType.DIRECT, durable=True)
-        q = await channel.declare_queue(queue, durable=True)
+        # Mesmos argumentos usados em connect(): declaração divergente é rejeitada
+        # com PRECONDITION_FAILED e o consumidor morre sem consumir nada.
+        q = await channel.declare_queue(queue, durable=True, arguments=queue_args(queue))
         await q.bind(exchange, routing_key=queue)
 
         logger.info("Consumindo: %s (prefetch=%d)", queue, prefetch)
@@ -112,10 +140,17 @@ class RabbitMQBroker(IMessageBroker):
                     await handler(payload)
                     await message.ack()
                 except Exception as exc:
-                    logger.error("Falha em %s: %s", queue, exc)
-                    deaths = message.headers.get("x-death", [])
-                    count = deaths[0].get("count", 0) if deaths else 0
-                    await message.nack(requeue=count < 3)
+                    # Uma única retentativa, decidida por `redelivered`.
+                    # Não use x-death para contar aqui: esse header só aparece
+                    # quando a mensagem passa pelo dead-letter, então com
+                    # requeue=True ele nunca existe e o contador ficaria preso em
+                    # zero — requeue infinito, reprocessando a análise para sempre.
+                    retry = not message.redelivered
+                    logger.error(
+                        "Falha em %s (%s): %s",
+                        queue, "vai reprocessar" if retry else "→ DLQ", exc,
+                    )
+                    await message.nack(requeue=retry)
 
     # ── Fallback in-process ───────────────────────────────────────────────────
     async def _publish_local(self, queue: str, payload: dict) -> None:
