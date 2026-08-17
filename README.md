@@ -170,7 +170,7 @@ Se você usar app sleeping (scale-to-zero) no projeto, deixe-o **desligado no wo
 
 ### Deploy monolítico (alternativa)
 
-O `Dockerfile` da raiz continua funcionando: compila o frontend, serve tudo num processo só com `EMBEDDED_WORKER=true`, sem Redis nem serviço MCP. Serve como rollback rápido — um serviço, uma variável (`ANTHROPIC_API_KEY`) e pronto.
+O `Dockerfile.mono` continua funcionando: compila o frontend, serve tudo num processo só com `EMBEDDED_WORKER=true`, sem Redis nem serviço MCP. Serve como rollback rápido — um serviço, uma variável (`ANTHROPIC_API_KEY`) e pronto.
 
 ## Contas demo
 
