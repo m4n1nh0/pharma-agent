@@ -27,7 +27,7 @@ def init_router(job_repo, broker):
 
 @router.post("/analyze", status_code=202)
 async def enqueue_drug_analysis(body: DrugAnalysisRequestDTO, current_user: dict = Depends(get_current_user)):
-    job = _job_repo.create(JobType.DRUG_ANALYSIS, current_user["id"], {
+    job = await _job_repo.create(JobType.DRUG_ANALYSIS, current_user["id"], {
         "drug_name": body.drug_name, "context": body.context,
         "patient_info": body.patient_info.model_dump() if body.patient_info else None,
     })
@@ -39,7 +39,7 @@ async def enqueue_drug_analysis(body: DrugAnalysisRequestDTO, current_user: dict
 async def enqueue_interactions(body: InteractionCheckRequestDTO, current_user: dict = Depends(get_current_user)):
     if len(body.drugs) < 2:
         raise HTTPException(status_code=400, detail="Informe pelo menos 2 medicamentos.")
-    job = _job_repo.create(JobType.INTERACTIONS, current_user["id"], {
+    job = await _job_repo.create(JobType.INTERACTIONS, current_user["id"], {
         "drugs": body.drugs,
         "patient_info": body.patient_info.model_dump() if body.patient_info else None,
     })
@@ -50,7 +50,7 @@ async def enqueue_interactions(body: InteractionCheckRequestDTO, current_user: d
 
 @router.post("/prescription", status_code=202)
 async def enqueue_prescription(body: PrescriptionReviewRequestDTO, current_user: dict = Depends(get_current_user)):
-    job = _job_repo.create(JobType.PRESCRIPTION, current_user["id"], {
+    job = await _job_repo.create(JobType.PRESCRIPTION, current_user["id"], {
         "prescription": [i.model_dump() for i in body.prescription],
         "patient_info": body.patient_info.model_dump() if body.patient_info else None,
         "clinical_context": body.clinical_context,
@@ -65,18 +65,19 @@ async def enqueue_prescription(body: PrescriptionReviewRequestDTO, current_user:
 
 @router.get("/")
 async def list_jobs(current_user: dict = Depends(get_current_user)):
-    jobs = _job_repo.list_by_user(current_user["id"])
+    jobs = await _job_repo.list_by_user(current_user["id"])
     return {"total": len(jobs), "jobs": [j.to_status_dict() for j in sorted(jobs, key=lambda x: x.created_at, reverse=True)]}
 
 
 @router.get("/{job_id}")
 async def get_job(job_id: str, current_user: dict = Depends(get_current_user)):
-    return _owned(job_id, current_user).to_status_dict()
+    job = await _owned(job_id, current_user)
+    return job.to_status_dict()
 
 
 @router.get("/{job_id}/result")
 async def get_result(job_id: str, current_user: dict = Depends(get_current_user)):
-    job = _owned(job_id, current_user)
+    job = await _owned(job_id, current_user)
     if job.status == JobStatus.PENDING:
         raise HTTPException(status_code=202, detail="Job ainda na fila.")
     if job.status == JobStatus.RUNNING:
@@ -89,7 +90,7 @@ async def get_result(job_id: str, current_user: dict = Depends(get_current_user)
 
 @router.get("/{job_id}/events")
 async def job_events(job_id: str, current_user: dict = Depends(get_current_user)):
-    _owned(job_id, current_user)
+    await _owned(job_id, current_user)
     return StreamingResponse(
         _job_repo.sse_generator(job_id),
         media_type="text/event-stream",
@@ -99,15 +100,17 @@ async def job_events(job_id: str, current_user: dict = Depends(get_current_user)
 
 @router.delete("/{job_id}")
 async def cancel_job(job_id: str, current_user: dict = Depends(get_current_user)):
-    job = _owned(job_id, current_user)
+    job = await _owned(job_id, current_user)
     if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
         raise HTTPException(status_code=400, detail=f"Job já finalizado: {job.status}")
-    job.status = JobStatus.CANCELLED
+    # Precisa passar pelo repositório: mutar o objeto local não persistiria nada
+    # quando o store é o Redis (o Job aqui é uma cópia desserializada).
+    await _job_repo.mark_cancelled(job_id)
     return {"job_id": job_id, "status": "cancelled"}
 
 
-def _owned(job_id: str, user: dict):
-    job = _job_repo.get(job_id)
+async def _owned(job_id: str, user: dict):
+    job = await _job_repo.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' não encontrado.")
     if job.user_id != user["id"]:

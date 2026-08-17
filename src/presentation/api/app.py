@@ -20,7 +20,7 @@ from src.config.settings import Settings, settings
 # Infrastructure — implementações concretas
 from src.infrastructure.ai.agent.pharma_agent import PharmaAnalysisAgent
 from src.infrastructure.messaging.rabbitmq_broker import broker
-from src.infrastructure.persistence.job_repository import job_repository
+from src.infrastructure.persistence.factory import get_job_repository
 
 # Application — serviços de negócio
 from src.application.services.analysis_service import AnalysisService
@@ -76,6 +76,7 @@ async def lifespan(app: FastAPI):
     yield  # app rodando
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
+    await _job_repository.close()
     await broker.disconnect()
     await _agent.stop()
 
@@ -83,10 +84,11 @@ async def lifespan(app: FastAPI):
 # ── Composição ───────────────────────────────────────────────────────────────
 # Instancia o agente e injeta dependências nos serviços e routers
 _agent = PharmaAnalysisAgent()
-_analysis_service = AnalysisService(agent=_agent, job_repo=job_repository, broker=broker)
+_job_repository = get_job_repository()
+_analysis_service = AnalysisService(agent=_agent, job_repo=_job_repository, broker=broker)
 
 analysis_router.init_router(_analysis_service)
-jobs_router.init_router(job_repository, broker)
+jobs_router.init_router(_job_repository, broker)
 
 
 # ── App ───────────────────────────────────────────────────────────────────────

@@ -13,13 +13,17 @@ if __name__ == "__main__":
 
 from datetime import datetime, timezone
 from src.infrastructure.messaging.rabbitmq_broker import broker, QUEUE_ANALYZE, QUEUE_INTERACTIONS, QUEUE_PRESCRIPTION
-from src.infrastructure.persistence.job_repository import job_repository
+from src.infrastructure.persistence.factory import get_job_repository
 from src.infrastructure.ai.agent.pharma_agent import PharmaAnalysisAgent
 
 logger = logging.getLogger("pharma.worker")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s %(message)s')
 
 _agent = PharmaAnalysisAgent()
+
+# Mesma fábrica usada pela API: com REDIS_URL definida, os dois processos
+# enxergam o mesmo job store (get_job_repository é cacheada por processo).
+job_repository = get_job_repository()
 
 
 def set_agent(agent: PharmaAnalysisAgent) -> None:

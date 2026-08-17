@@ -79,7 +79,7 @@ class AnalysisService:
         extra: dict = None,
         priority: int = 0,
     ) -> JSONResponse:
-        job = self._job_repo.create(job_type=job_type, user_id=user_id, payload=payload)
+        job = await self._job_repo.create(job_type=job_type, user_id=user_id, payload=payload)
         await self._broker.publish(queue, {"job_id": job.id, "user_id": user_id, **payload}, priority)
         return JSONResponse(
             status_code=202,

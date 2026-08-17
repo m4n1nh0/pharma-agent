@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
     embedded_worker: bool = True
 
+    # Redis — job store compartilhado. Vazio = store em memória (processo único).
+    # Obrigatório quando API e worker rodam em serviços separados.
+    redis_url: str = ""
+
     # Async thresholds
     async_threshold_interactions: int = 3
     async_threshold_prescription: int = 3

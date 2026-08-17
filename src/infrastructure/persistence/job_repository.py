@@ -18,7 +18,7 @@ class InMemoryJobRepository(IJobRepository):
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
-    def create(self, job_type: JobType, user_id: str, payload: dict) -> Job:
+    async def create(self, job_type: JobType, user_id: str, payload: dict) -> Job:
         job = Job(
             id=f"job_{uuid.uuid4().hex[:12]}",
             type=job_type,
@@ -28,11 +28,14 @@ class InMemoryJobRepository(IJobRepository):
         self._jobs[job.id] = job
         return job
 
-    def get(self, job_id: str) -> Optional[Job]:
+    async def get(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)
 
-    def list_by_user(self, user_id: str) -> List[Job]:
+    async def list_by_user(self, user_id: str) -> List[Job]:
         return [j for j in self._jobs.values() if j.user_id == user_id]
+
+    async def close(self) -> None:
+        """Nada a liberar — o store é um dict local."""
 
     # ── Transitions ───────────────────────────────────────────────────────────
     async def mark_running(self, job_id: str, msg: str = "Processando...") -> None:
@@ -77,6 +80,13 @@ class InMemoryJobRepository(IJobRepository):
             )
         await self._notify(job)
 
+    async def mark_cancelled(self, job_id: str) -> None:
+        job = self._require(job_id)
+        job.status = JobStatus.CANCELLED
+        job.progress_msg = "Cancelado"
+        job.completed_at = datetime.now(timezone.utc).isoformat()
+        await self._notify(job)
+
     # ── SSE ───────────────────────────────────────────────────────────────────
     def subscribe(self, job_id: str) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=50)
@@ -89,7 +99,7 @@ class InMemoryJobRepository(IJobRepository):
             subs.remove(q)
 
     async def sse_generator(self, job_id: str, timeout: float = 300.0) -> AsyncGenerator[str, None]:
-        job = self.get(job_id)
+        job = await self.get(job_id)
         if not job:
             yield 'data: {"error": "job não encontrado"}\n\n'
             return

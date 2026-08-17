@@ -6,16 +6,20 @@ from src.domain.entities.job import Job, JobStatus, JobType
 
 
 class IJobRepository(ABC):
-    """Contrato para persistência e notificação de jobs."""
+    """Contrato para persistência e notificação de jobs.
+
+    Todos os métodos são assíncronos: implementações fora do processo (Redis,
+    Postgres) fazem I/O de rede até para ler um job.
+    """
 
     @abstractmethod
-    def create(self, job_type: JobType, user_id: str, payload: dict) -> Job: ...
+    async def create(self, job_type: JobType, user_id: str, payload: dict) -> Job: ...
 
     @abstractmethod
-    def get(self, job_id: str) -> Optional[Job]: ...
+    async def get(self, job_id: str) -> Optional[Job]: ...
 
     @abstractmethod
-    def list_by_user(self, user_id: str) -> List[Job]: ...
+    async def list_by_user(self, user_id: str) -> List[Job]: ...
 
     @abstractmethod
     async def mark_running(self, job_id: str, msg: str) -> None: ...
@@ -30,7 +34,14 @@ class IJobRepository(ABC):
     async def mark_failed(self, job_id: str, error: str) -> None: ...
 
     @abstractmethod
+    async def mark_cancelled(self, job_id: str) -> None: ...
+
+    @abstractmethod
     async def sse_generator(self, job_id: str, timeout: float) -> AsyncGenerator[str, None]: ...
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Libera conexões no shutdown. No-op em implementações locais."""
 
 
 class IMessageBroker(ABC):
