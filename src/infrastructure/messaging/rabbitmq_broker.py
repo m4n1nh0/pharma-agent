@@ -27,13 +27,24 @@ ALL_QUEUES = [QUEUE_ANALYZE, QUEUE_INTERACTIONS, QUEUE_PRESCRIPTION, QUEUE_RESUL
 
 
 class RabbitMQBroker(IMessageBroker):
-    """Implementação de IMessageBroker com RabbitMQ via aio-pika."""
+    """Implementação de IMessageBroker com RabbitMQ via aio-pika.
+
+    Degrada para despacho in-process quando o RabbitMQ não está disponível
+    (deploy single-service, ex. Railway sem addon): `publish` chama o handler
+    registrado em `consume` numa task local, em vez de falhar.
+    """
 
     def __init__(self) -> None:
         self._conn = None
         self._pub_channel = None
         self._direct_exchange = None
         self._events_exchange = None
+        self._local_handlers: dict[str, Callable[[dict], Awaitable[None]]] = {}
+        self._local_tasks: set[asyncio.Task] = set()
+
+    @property
+    def is_connected(self) -> bool:
+        return self._conn is not None and not self._conn.is_closed
 
     async def connect(self) -> None:
         logger.info("Conectando ao RabbitMQ: %s", settings.rabbitmq_url)
@@ -63,7 +74,7 @@ class RabbitMQBroker(IMessageBroker):
 
     async def publish(self, queue: str, payload: dict, priority: int = 0) -> None:
         if not self._direct_exchange:
-            raise RuntimeError("Broker não conectado")
+            return await self._publish_local(queue, payload)
         body = json.dumps(payload, default=str).encode()
         msg = Message(
             body,
@@ -82,8 +93,11 @@ class RabbitMQBroker(IMessageBroker):
         await self._events_exchange.publish(msg, routing_key="")
 
     async def consume(self, queue: str, handler: Callable[[dict], Awaitable[None]], prefetch: int = 1) -> None:
+        self._local_handlers[queue] = handler
         if not self._conn:
-            raise RuntimeError("Broker não conectado")
+            # Sem RabbitMQ: fica registrado como handler local e `publish` despacha direto.
+            logger.warning("Sem conexão — %s será processada in-process (sem fila durável)", queue)
+            return
         channel = await self._conn.channel()
         await channel.set_qos(prefetch_count=prefetch)
         exchange = await channel.declare_exchange(EXCHANGE_DIRECT, aio_pika.ExchangeType.DIRECT, durable=True)
@@ -102,6 +116,31 @@ class RabbitMQBroker(IMessageBroker):
                     deaths = message.headers.get("x-death", [])
                     count = deaths[0].get("count", 0) if deaths else 0
                     await message.nack(requeue=count < 3)
+
+    # ── Fallback in-process ───────────────────────────────────────────────────
+    async def _publish_local(self, queue: str, payload: dict) -> None:
+        """Executa o handler da fila numa task local (sem RabbitMQ).
+
+        Mantém referência forte à task: sem isso o GC pode coletá-la no meio da
+        execução, já que `create_task` não guarda referência própria.
+        """
+        handler = self._local_handlers.get(queue)
+        if not handler:
+            raise RuntimeError(
+                f"Fila '{queue}' sem broker e sem handler local — "
+                "verifique EMBEDDED_WORKER e RABBITMQ_URL"
+            )
+        task = asyncio.create_task(self._run_local(queue, handler, payload))
+        self._local_tasks.add(task)
+        task.add_done_callback(self._local_tasks.discard)
+
+    @staticmethod
+    async def _run_local(queue: str, handler: Callable[[dict], Awaitable[None]], payload: dict) -> None:
+        try:
+            await handler(payload)
+        except Exception as exc:
+            # O handler já marcou o job como failed; aqui só evitamos exceção órfã na task.
+            logger.error("Falha no processamento local de %s: %s", queue, exc)
 
 
 broker = RabbitMQBroker()

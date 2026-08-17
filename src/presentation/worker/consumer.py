@@ -22,6 +22,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name
 _agent = PharmaAnalysisAgent()
 
 
+def set_agent(agent: PharmaAnalysisAgent) -> None:
+    """Injeta um agente já iniciado (modo embutido).
+
+    Evita que o worker suba um segundo MCP server no mesmo processo do FastAPI —
+    e garante que `start()` já foi chamado, sem o qual o grafo é None.
+    """
+    global _agent
+    _agent = agent
+
+
 async def handle_drug_analysis(payload: dict) -> None:
     job_id = payload["job_id"]
     await job_repository.mark_running(job_id, "Consultando base farmacológica...")
@@ -77,6 +87,7 @@ async def handle_prescription(payload: dict) -> None:
 
 async def run_worker() -> None:
     logger.info("Iniciando worker farmacêutico...")
+    await _agent.start()  # compila o grafo LangGraph e conecta ao MCP server
     await broker.connect()
     await asyncio.gather(
         broker.consume(QUEUE_ANALYZE, handle_drug_analysis, prefetch=2),
@@ -86,9 +97,15 @@ async def run_worker() -> None:
 
 
 async def run_worker_background() -> None:
-    """Modo embutido (desenvolvimento): roda no mesmo processo que o FastAPI."""
-    await asyncio.sleep(1)
-    logger.info("Worker embutido iniciado")
+    """Modo embutido: roda no mesmo processo que o FastAPI.
+
+    Usado em dev e em deploy single-service (Railway), onde o job store em
+    memória exige que API e worker compartilhem o processo. Sem RabbitMQ,
+    `consume` apenas registra os handlers e retorna — o broker então despacha
+    in-process (ver RabbitMQBroker._publish_local).
+    """
+    logger.info("Worker embutido iniciado (broker=%s)",
+                "rabbitmq" if broker.is_connected else "in-process")
     try:
         await asyncio.gather(
             broker.consume(QUEUE_ANALYZE, handle_drug_analysis, prefetch=2),

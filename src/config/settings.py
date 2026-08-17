@@ -31,9 +31,15 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # Observabilidade
+    log_level: str = "INFO"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # Plataformas de deploy (Railway, etc.) injetam muitas variáveis próprias —
+        # e o .env local tem chaves não declaradas aqui. Ignorar em vez de falhar.
+        extra = "ignore"
 
 
 @lru_cache

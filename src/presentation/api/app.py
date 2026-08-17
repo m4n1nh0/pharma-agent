@@ -4,6 +4,7 @@ Nenhuma outra camada importa de outra diretamente — tudo é injetado aqui.
 """
 
 import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -14,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 # Config
-from src.config.settings import settings
+from src.config.settings import Settings, settings
 
 # Infrastructure — implementações concretas
 from src.infrastructure.ai.agent.pharma_agent import PharmaAnalysisAgent
@@ -31,20 +32,46 @@ from src.presentation.api.middleware.timing import TimingMiddleware, metrics
 
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "frontend", "dist")
 
+# Configurado no import, antes de qualquer logger.info de startup — sem isso o
+# root logger fica em WARNING e os logs de boot (MCP, broker, worker) somem.
+logging.basicConfig(
+    level=settings.log_level.upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("pharma.api")
+
 
 # ── Lifespan ─────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
+    if not settings.anthropic_api_key:
+        logger.error("ANTHROPIC_API_KEY não definida — as análises vão falhar com 401")
+    if settings.secret_key == Settings.model_fields["secret_key"].default:
+        logger.warning("SECRET_KEY é o valor default — defina uma chave própria em produção")
+
     await _agent.start()
 
     try:
         await broker.connect()
-        if settings.embedded_worker:
-            from src.presentation.worker.consumer import run_worker_background
-            asyncio.create_task(run_worker_background())
     except Exception as e:
-        print(f"[WARN] RabbitMQ indisponível — modo síncrono: {e}")
+        # Deploy sem RabbitMQ (ex. Railway single-service): o worker embutido segue
+        # ativo e o broker despacha os jobs in-process — sem fila durável.
+        logger.warning("RabbitMQ indisponível — jobs serão processados in-process: %s", e)
+
+    if settings.embedded_worker:
+        from src.presentation.worker import consumer
+        # Reaproveita o agente já iniciado acima: sem isso o worker usaria a própria
+        # instância, com o grafo ainda não compilado, e todo job falharia.
+        consumer.set_agent(_agent)
+        run_worker_background = consumer.run_worker_background
+        if broker.is_connected:
+            # consume() bloqueia iterando a fila → precisa de task própria.
+            asyncio.create_task(run_worker_background())
+        else:
+            # Sem broker, consume() só registra os handlers e retorna: precisa
+            # terminar antes do yield, senão um request inicial não acha handler.
+            await run_worker_background()
 
     yield  # app rodando
 
@@ -94,7 +121,11 @@ async def root():
 
 @app.get("/health", tags=["Sistema"])
 async def health():
-    return {"status": "healthy", "version": settings.app_version, "broker": "connected" if broker._conn else "disconnected"}
+    return {
+        "status": "healthy",
+        "version": settings.app_version,
+        "broker": "connected" if broker.is_connected else "in-process",
+    }
 
 
 @app.get("/metrics", tags=["Sistema"])

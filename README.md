@@ -31,7 +31,8 @@ pharma_v2/
 │   └── e2e/             → fluxos HTTP completos
 ├── .env.example
 ├── docker-compose.yml
-├── Dockerfile
+├── Dockerfile           → multi-stage: build do frontend + runtime Python
+├── railway.json         → builder, healthcheck e restart policy do Railway
 └── pyproject.toml
 ```
 
@@ -95,6 +96,46 @@ Serviços sobem em:
 | Swagger UI | http://localhost:8000/docs |
 | RabbitMQ management | http://localhost:15672 (guest/guest) |
 
+## Deploy no Railway
+
+O `Dockerfile` é multi-stage: compila o frontend (Node) e serve o build estático pelo próprio FastAPI, então **um único serviço** entrega API + SPA. O `railway.json` já aponta o builder para o Dockerfile e o healthcheck para `/health`.
+
+**1. Criar o projeto**
+
+```bash
+railway login
+railway init
+railway up          # ou conecte o repo do GitHub pelo dashboard
+```
+
+**2. Definir as variáveis** (Settings → Variables):
+
+| Variável | Valor |
+|---|---|
+| `ANTHROPIC_API_KEY` | sua chave |
+| `SECRET_KEY` | `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `EMBEDDED_WORKER` | `true` |
+
+Não defina `PORT` — o Railway injeta a porta e o `CMD` já a usa.
+
+**3. Gerar o domínio** (Settings → Networking → Generate Domain). A SPA responde em `/`, o Swagger em `/docs`.
+
+### RabbitMQ é opcional
+
+Sem `RABBITMQ_URL` acessível, o broker degrada para despacho **in-process**: os jobs assíncronos continuam funcionando (o worker embutido processa em background), só não há fila durável — jobs em andamento são perdidos num redeploy. Para ter fila de verdade, adicione o template RabbitMQ ao projeto e aponte `RABBITMQ_URL` para a variável de conexão dele.
+
+`GET /health` mostra qual modo está ativo:
+
+```json
+{"status": "healthy", "version": "3.0.0", "broker": "in-process"}
+```
+
+### Limites desta configuração
+
+- **`--workers 1` e `numReplicas: 1`** são obrigatórios: o job store e os subscribers SSE vivem em memória (`InMemoryJobRepository`), então réplicas não veriam os mesmos jobs. Para escalar horizontalmente, implemente `IJobRepository` sobre Redis/Postgres.
+- **Usuários também são em memória** (`USERS_DB` em `auth_service.py`): contas criadas via `/auth/register` desaparecem no redeploy. As contas demo continuam disponíveis.
+- **`EMBEDDED_WORKER=false` com worker separado** só funciona quando o job store for compartilhado (Redis/Postgres) — hoje o worker marcaria o progresso no próprio processo e a API nunca veria. Vale também para o serviço `worker` do `docker-compose.yml`.
+
 ## Contas demo
 
 | E-mail | Senha | Perfil |
@@ -112,6 +153,8 @@ Serviços sobem em:
 | `EMBEDDED_WORKER` | `true` | Não |
 | `ASYNC_THRESHOLD_INTERACTIONS` | `3` | Não |
 | `ASYNC_THRESHOLD_PRESCRIPTION` | `3` | Não |
+| `PORT` | `8000` | Não (injetada pela plataforma) |
+| `LOG_LEVEL` | `INFO` | Não |
 
 Todas as configurações ficam em `src/config/settings.py`.
 

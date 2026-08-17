@@ -12,8 +12,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-logger = logging.getLogger("pharma.api")
+# Logger próprio: as linhas abaixo são JSON puro, sem prefixo de formatação.
+# propagate=False para não duplicar no handler do root (ver basicConfig em app.py).
+logger = logging.getLogger("pharma.access")
 logger.setLevel(logging.INFO)
+logger.propagate = False
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("%(message)s"))
 logger.addHandler(handler)

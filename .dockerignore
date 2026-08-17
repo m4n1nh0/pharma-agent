@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.claude
+.pytest_cache
+__pycache__
+**/__pycache__
+*.pyc
+node_modules
+**/node_modules
+frontend/dist
+frontend_legacy
+tests
+README.md
+LICENSE
+docker-compose.yml
